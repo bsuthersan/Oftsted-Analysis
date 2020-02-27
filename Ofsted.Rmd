@@ -1,0 +1,138 @@
+---
+title: "Ofsted analysis"
+output: html_notebook
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+library(tidyverse)
+library(knitr)
+ofsted <- read_csv("https://raw.githubusercontent.com/bsuthersan/Oftsted-Analysis/master/Management_information_-_state-funded_schools_-_latest_inspections_at_31_Dec_2019.csv")
+#For ease of analysis remove all whitespace in colnames
+colnames(ofsted) <- gsub(" ","_", colnames(ofsted))
+ofsted <- ofsted %>%
+  rename(IDACI = `The_income_deprivation_affecting_children_index_(IDACI)_quintile`)
+```
+
+
+```{r, echo=FALSE}
+##Define the function percent function
+percent_function <-function(x) {
+  ofsted %>%
+  count({{x}}) %>%
+  mutate(Percent = round(n/sum(n)*100,1)) }
+
+#Funciton for loooking at the effectiveness, the variable we are most interested in
+effectiveness_summary <- function(x) {
+  ofsted %>%
+  group_by({{x}}) %>%
+  summarise(Total = n(),
+    Mean_effectiveness = round(mean(Overall_effectiveness, na.rm=T),2)) %>%
+  arrange(Mean_effectiveness)
+}
+
+#Create a list to examine the mean effectiveness of each variable
+effect_data <- ofsted %>%
+  map(effectiveness_summary)
+```
+
+#Introduction
+
+In the UK, Ofsted (The Office for Standards in Education, Children's Services and Skills) is a non-ministerial department which carries out regular inspections of education and skills services. There are four grades that can be achieved:
+
+- 1, or 'Outstanding'
+- 2, or 'Good'
+- 3, or 'Requires Improvement'
+- 4, or 'Inadequate'
+
+In this analysis, I'll be making use of the most recent Ofsted data to see if I can find any key trends in the distribution of Ofsted grades. In particlar, I'm interested in finding out if we can predict which schools mgiht be rated as outstanding or not.
+
+#Understanding the breakdown of Osted scores
+
+```{r}
+effect_table <- percent_function(Overall_effectiveness)
+```
+
+So, how do schools in the UK do in terms of Ofsted ratings?
+
+The dataset contained `r prettyNum(length(ofsted$URN), big.mark=",")` schools in the UK. Of these, around 1 in 5 (19.4%) were rated as outstanding, whilst fully 2/3rds (66%) were rated as 2, or 'Good'. Ten percent were 3 ('needs improvement'), and 3.5% were rated as 4, or 'inaequate'.
+
+So, can we identify any trends in the breakdowns of scores? To begin with, I looked at the breakdon of scores by Type of Education. Note that I've filtered for 1000 or more incidences.
+
+```{r}
+library(broom)
+effect_data$Type_of_education %>%
+  filter(Total>1000) %>%
+  ggplot(aes(reorder(`<chr>`,-Mean_effectiveness), Mean_effectiveness)) +
+  geom_bar(stat='identity') +
+  coord_flip() +
+  theme_minimal() +
+  xlab("") +
+  ylab("Average Ofsted Rating")
+```
+
+Here, we can see that Academy Sponsor led schools seem to have poorer outcomes than the rest of the education types.
+
+Another variable of interest is that of IDACI. As can be seen below, the higher the IDACI quintile, the higher the average Ofsted score.
+
+```{r}
+effect_data$IDACI %>%
+  filter(`<chr>`!="NULL") %>% 
+  rename(`IDACI Quintile` = `<chr>`) %>%
+  kable()
+```
+
+What about the size of the school, can we tell anything from that?
+
+```{r}
+ofsted %>%
+  ggplot(aes(Overall_effectiveness, Total_number_of_pupils)) +
+  geom_boxplot(aes(group=Overall_effectiveness))
+```
+
+So, it looks like schools which scored lower were smaller, but this might be confounded by school type.
+
+```{r}
+ofsted %>%
+  ggplot(aes(Overall_effectiveness, Total_number_of_pupils)) +
+  geom_boxplot(aes(group=Overall_effectiveness)) +
+  facet_wrap(~Ofsted_phase)
+```
+
+Okay, that is really interesting - secondary schools with fewer students actually have higher average scores.
+
+Let's go ahead and build this decision tree.
+
+```{r}
+library(rpart)
+
+ofsted <- ofsted %>%
+  filter(!is.na(Overall_effectiveness))
+
+ofsted_data_train <- ofsted %>%
+  select(URN, Overall_effectiveness, IDACI, Total_number_of_pupils, Type_of_education) %>%
+  sample_frac(.75)
+
+ofsted_data_test <- ofsted %>%
+    select(URN, Overall_effectiveness, IDACI, Total_number_of_pupils, Type_of_education) %>%
+  filter(!URN %in% ofsted_data_train$URN)
+
+ofsted_data_train <- ofsted_data_train %>%
+  select(-URN) %>%
+  mutate(Overall_effectiveness2 = case_when(
+    Overall_effectiveness==1  ~ "One",
+    Overall_effectiveness==1 ~ "Two",
+    Overall_effectiveness==3 ~ "Three",
+    TRUE ~ "Four"
+  ))
+
+ofsted_fit <- caret::train(Overall_effectiveness ~ IDACI + Type_of_education, data = ofsted_data_train, method = "rf")
+
+library(rpart.plot)
+plot(fit)
+```
+
+
+
+
